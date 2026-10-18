@@ -21,7 +21,48 @@
 
 ---
 
+## เปิดโปรแกรม (GUI) — สำหรับมือใหม่ ไม่ต้องใช้ command line
+
+**แค่ดับเบิลคลิก `AI-Agent-Router.exe` ก็ใช้งานได้เลย** ไม่ต้องแก้ไฟล์ `.env` เอง ไม่ต้องพิมพ์คำสั่ง
+
+1. **ดับเบิลคลิก `AI-Agent-Router.exe`** → หน้าต่างโปรแกรมเปิดขึ้น (ไม่มีหน้าจอดำ console)
+2. ครั้งแรกโปรแกรมจะ **สร้างกุญแจ (Router Key) แบบสุ่มให้อัตโนมัติ** และบันทึกลงไฟล์ `.env` ข้าง EXE
+3. เซิร์ฟเวอร์ **เริ่มทำงานเอง** — ไฟเขียว "กำลังทำงาน" ที่ `http://127.0.0.1:8080`
+4. (ถ้าจะใช้ Grok) วางกุญแจ xAI ในช่อง **"กุญแจ xAI สำหรับ Grok"** แล้วกด **บันทึก** — ไฟของ grok จะเป็นสีเขียว
+5. ไปที่แท็บ **"คู่มือ / วิธีเชื่อมต่อ"** → กด **คัดลอก** config ของ OpenCode หรือ Cursor (กุญแจถูกใส่ไว้ให้แล้ว) ไปวางในไฟล์ตั้งค่าของโปรแกรมนั้น แล้วเปิด OpenCode/Cursor ใหม่
+6. เปิดหน้าต่างนี้ค้างไว้ระหว่างใช้งาน — ช่อง **"บันทึกการทำงาน"** จะแสดงว่าใครส่งงานให้ใคร สำเร็จหรือไม่ • ปิดหน้าต่าง = หยุดเซิร์ฟเวอร์และออกจากโปรแกรม
+
+![หน้าหลัก](docs/gui-main.png)
+![คู่มือ / วิธีเชื่อมต่อ](docs/gui-guide.png)
+<sub>ภาพตัวอย่างถ่ายบน Linux — บน Windows หน้าตาจะเป็นปุ่มสไตล์ Windows และฟอนต์ Leelawadee UI</sub>
+
+ส่วนต่าง ๆ ในหน้าต่าง:
+| ส่วน | ทำอะไร |
+|---|---|
+| 1) เซิร์ฟเวอร์ | ไฟสถานะ (เขียว = ทำงาน, เทา = หยุด, ส้ม = กำลังเริ่ม/หยุด, แดง = ผิดพลาด เช่นพอร์ตถูกใช้), ปุ่ม เริ่ม/หยุด, URL (คลิกเพื่อเปิด / ปุ่มคัดลอก), เปลี่ยนพอร์ต, ติ๊ก "เริ่มทำงานอัตโนมัติ" |
+| 2) กุญแจ | Router Key (คัดลอก / แก้ไข / สุ่มใหม่) และกุญแจ xAI (ซ่อนได้, บันทึก) — บันทึกแล้วเซิร์ฟเวอร์รีสตาร์ทให้เอง |
+| 3) AI ปลายทาง | ไฟของแต่ละ agent: **เขียว = พร้อมใช้**, **เทา = ยังไม่ตั้งค่า**, **แดง = ปิด** พร้อมคำอธิบายสั้น ๆ ว่าต้องตั้งอะไร |
+| 4) บันทึกการทำงาน | log แบบอ่านง่าย เช่น `➜ opencode ส่งงานให้ grok`, `✔ grok ตอบกลับ opencode สำเร็จ (1.2 วินาที)`, `✖ ... ไม่สำเร็จ [503]` (ติ๊ก "แสดงรายละเอียดทางเทคนิค" เพื่อดู log เต็ม) |
+| แท็บคู่มือ | MCP URL, X-API-Key, config ของ OpenCode/Cursor (แบบ URL และแบบ stdio) พร้อมปุ่มคัดลอก, ตัวอย่าง PowerShell, ปัญหาที่พบบ่อย |
+
+### โหมดการเปิดโปรแกรม
+| วิธีเปิด | ผลลัพธ์ |
+|---|---|
+| ดับเบิลคลิก / `AI-Agent-Router.exe` (ไม่มี argument) / `python main.py` | **GUI** (เริ่มเซิร์ฟเวอร์อัตโนมัติ) |
+| `--gui` (ใช้ร่วมกับ `--port`, `--host`, `--config` ได้) | GUI |
+| `--no-gui` หรือ `--headless` | เซิร์ฟเวอร์อย่างเดียว ไม่มีหน้าต่าง (แบบเดิม) |
+| `--mcp-stdio` | MCP server ผ่าน stdio (สำหรับ OpenCode/Cursor แบบ local) |
+| มี argument อื่น เช่น `--port 9000` โดยไม่มี `--gui` | เซิร์ฟเวอร์อย่างเดียว (เหมือนเวอร์ชันก่อน) |
+| ตั้ง env `ROUTER_NO_GUI=1` | บังคับไม่เปิด GUI |
+| เปิด GUI ไม่ได้ (ไม่มี tkinter / ไม่มีจอ เช่นบน server Linux) | เปลี่ยนเป็นเซิร์ฟเวอร์อย่างเดียวอัตโนมัติ |
+
+> การตั้งค่าที่ GUI เขียนลง `.env`: `ROUTER_API_KEYS`, `XAI_API_KEY`, `ROUTER_PORT`, `ROUTER_GUI_AUTOSTART` (แก้ด้วยมือก็ได้)
+> ต้องวาง EXE ในโฟลเดอร์ที่เขียนไฟล์ได้ (เช่น Desktop, Documents, `C:\Tools\AI-Agent-Router`) — ไม่แนะนำ `C:\Program Files`
+
+---
+
 ## สารบัญ
+0. [เปิดโปรแกรม (GUI)](#เปิดโปรแกรม-gui--สำหรับมือใหม่-ไม่ต้องใช้-command-line)
 1. [โครงสร้างโปรเจกต์](#1-โครงสร้างโปรเจกต์)
 2. [ติดตั้งและรัน](#2-ติดตั้งและรัน)
 3. [การตั้งค่า (.env / config.yaml)](#3-การตั้งค่า-env--configyaml)
@@ -43,7 +84,8 @@
 
 ```
 ai-agent-router/
-├── main.py              FastAPI app + entrypoint (CLI: --host --port --config --mcp-stdio)
+├── main.py              FastAPI app + entrypoint (ไม่มี argument = GUI; --no-gui / --mcp-stdio / --port ...)
+├── gui.py               หน้าต่างโปรแกรม (Tkinter) ภาษาไทย
 ├── mcp_server.py        MCP server (tools: invoke_agent, delegate, list_agents)
 ├── router_core.py       แกนกลาง: registry ของ agent, ตรวจ API key, route ตาม target
 ├── config.py            โหลด .env + config.yaml, ${ENV} substitution, logging
@@ -54,6 +96,7 @@ ai-agent-router/
 │   ├── grok.py          xAI Grok (https://api.x.ai/v1/chat/completions)
 │   ├── cursor.py        Cursor (placeholder + webhook mode)
 │   └── opencode.py      OpenCode (เรียก HTTP API ของ `opencode serve`)
+├── docs/                ภาพตัวอย่างหน้าจอ
 ├── tests/
 │   ├── mock_echo_server.py   mock agent สำหรับทดสอบ
 │   └── mcp_client_test.py    ทดสอบ MCP ผ่าน http / sse / stdio
@@ -68,7 +111,7 @@ ai-agent-router/
 
 ## 2. ติดตั้งและรัน
 
-ต้องมี **Python 3.11 – 3.13 (64-bit)**
+ต้องมี **Python 3.11 – 3.13 (64-bit)** — (ผู้ใช้ทั่วไปใช้ไฟล์ EXE ได้เลย ไม่ต้องทำหัวข้อนี้)
 
 ### Windows (PowerShell / CMD)
 ```bat
@@ -76,10 +119,12 @@ cd ai-agent-router
 py -3 -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
+python main.py                 :: เปิด GUI — สร้าง .env + กุญแจให้อัตโนมัติ
+:: หรือแบบไม่มีหน้าต่าง (ต้องมี .env เอง):
 copy .env.example .env
 copy config.yaml.example config.yaml
 notepad .env
-python main.py
+python main.py --no-gui
 ```
 
 ### Linux / macOS
@@ -90,7 +135,7 @@ source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
 cp config.yaml.example config.yaml     # ไม่บังคับ: ถ้าไม่มีจะใช้ agent ค่าเริ่มต้น grok / cursor / opencode
-python main.py
+python main.py --no-gui                # หรือ python main.py เพื่อเปิด GUI (Linux ต้องมี python3-tk)
 ```
 
 เปิด http://127.0.0.1:8080/health เพื่อตรวจสอบ (เอกสาร API อัตโนมัติอยู่ที่ http://127.0.0.1:8080/docs)
@@ -102,6 +147,8 @@ python main.py
 | `--port 9000` | เปลี่ยน port (ค่าเริ่มต้น `8080`) |
 | `--config D:\router\config.yaml` | ระบุไฟล์ config เอง |
 | `--mcp-stdio` | รันเป็น MCP server แบบ stdio (ไม่เปิด HTTP) |
+| `--gui` | เปิดหน้าต่าง GUI (ค่าเริ่มต้นเมื่อไม่มี argument) |
+| `--no-gui`, `--headless` | รันเซิร์ฟเวอร์โดยไม่เปิดหน้าต่าง |
 | `--log-level DEBUG` | ระดับ log |
 | `--log-file logs\router.log` | เขียน log ลงไฟล์ด้วย |
 | `--version` | แสดงเวอร์ชัน |
@@ -140,6 +187,9 @@ XAI_API_KEY=xai-...........
 | `ROUTER_HOST`, `ROUTER_PORT` | host/port |
 | `ROUTER_LOG_LEVEL`, `ROUTER_LOG_FILE` | logging |
 | `ROUTER_CONFIG` | path ของ config.yaml |
+| `ROUTER_HOME` | ใช้โฟลเดอร์นี้แทนโฟลเดอร์ของ EXE สำหรับ `.env` / `config.yaml` / `logs` |
+| `ROUTER_NO_GUI` | `1` = ไม่เปิด GUI แม้ไม่มี argument |
+| `ROUTER_GUI_AUTOSTART` | `1`/`0` เริ่มเซิร์ฟเวอร์อัตโนมัติเมื่อเปิด GUI (ค่าเริ่มต้น 1) |
 | `ROUTER_MCP_REQUIRE_AUTH` | `true`/`false` บังคับ key บน /mcp, /sse |
 | `ROUTER_ALLOW_ANONYMOUS` | `true` = ไม่ต้องมี key เมื่อยังไม่ได้ตั้ง key ใดเลย (ทดสอบเท่านั้น) |
 | `XAI_API_KEY`, `GROK_MODEL`, `XAI_BASE_URL` | สำหรับ Grok |
@@ -446,21 +496,30 @@ class OllamaAgent(BaseAgent):
 cd ai-agent-router
 build.bat
 ```
+ต้องใช้ Python 3.11 – 3.13 จาก python.org (มี tkinter มาด้วย — ตอนติดตั้งต้องติ๊ก "tcl/tk and IDLE" ซึ่งติ๊กไว้เป็นค่าเริ่มต้น)
+
 สิ่งที่ build.bat ทำ:
 1. หา Python (`py -3` หรือ `python`) แล้วสร้าง `.venv` (ถ้ายังไม่มี)
-2. `pip install -r requirements.txt` (รวม PyInstaller)
-3. `pyinstaller --onefile --console --name AI-Agent-Router` พร้อม
+2. `pip install -r requirements.txt` (รวม PyInstaller) และตรวจว่ามี tkinter
+3. `pyinstaller --onefile --console --hide-console hide-early --name AI-Agent-Router` พร้อม
    `--collect-submodules mcp.server/mcp.shared/mcp.client/mcp.types/mcp.os --collect-data mcp --copy-metadata mcp`,
    `--collect-all` สำหรับ `mcp_types fastapi starlette uvicorn sse_starlette pydantic pydantic_core httpx httpx2 anyio jsonschema jsonschema_specifications opentelemetry`,
-   `--hidden-import yaml dotenv python_multipart agents.* config router_core mcp_server`
-4. คัดลอก `.env.example`, `config.yaml.example` (และสร้าง `.env` ถ้ายังไม่มี) ไปไว้ใน `dist\`
+   `--hidden-import yaml dotenv python_multipart agents.* config router_core mcp_server gui tkinter tkinter.ttk tkinter.scrolledtext tkinter.messagebox tkinter.font`
+4. คัดลอก `.env.example`, `config.yaml.example` (และ `config.yaml` ถ้ามี) ไปไว้ใน `dist\` — **ไม่คัดลอก `.env`** เพราะ GUI จะสร้างให้พร้อมกุญแจใหม่ตอนเปิดครั้งแรก
 
-ผลลัพธ์: `dist\AI-Agent-Router.exe` (~25 MB) — นำไปวางที่ไหนก็ได้พร้อม `.env` / `config.yaml` ข้าง ๆ
+ผลลัพธ์: `dist\AI-Agent-Router.exe` (~30 MB) — ย้ายไปไว้โฟลเดอร์ไหนก็ได้ (ที่เขียนไฟล์ได้) แล้วดับเบิลคลิก
 ```bat
-dist\AI-Agent-Router.exe                 :: เปิด server http://127.0.0.1:8080
-dist\AI-Agent-Router.exe --port 9000
+dist\AI-Agent-Router.exe                 :: GUI
+dist\AI-Agent-Router.exe --no-gui        :: เซิร์ฟเวอร์อย่างเดียว http://127.0.0.1:8080
 dist\AI-Agent-Router.exe --mcp-stdio     :: โหมด MCP stdio
 ```
+
+### ทำไมเป็น console EXE + `--hide-console hide-early` (ไม่ใช้ `--windowed`)
+- โหมด `--mcp-stdio` ต้องมี stdin/stdout จริงสำหรับคุยกับ OpenCode/Cursor — EXE แบบ console มีเสมอ ไม่ขึ้นกับว่าโปรแกรมแม่ส่ง pipe มาอย่างไร ส่วน `--windowed` (GUI subsystem) บน Windows อาจไม่มี stdout/stderr (`sys.stdout` เป็น `None`) ซึ่งเสี่ยงทำให้ stdio MCP พัง
+- `--hide-console hide-early`: เมื่อ **ดับเบิลคลิก** (EXE เป็นเจ้าของหน้าต่าง console เอง) bootloader ของ PyInstaller จะซ่อน console ทันทีตั้งแต่ก่อนแตกไฟล์ → ผู้ใช้เห็นแค่หน้าต่าง GUI (อาจเห็นกรอบดำแวบสั้นมากเสี้ยววินาทีบางเครื่อง)
+- เมื่อเปิดจาก cmd/PowerShell ที่มีอยู่แล้ว console **ไม่ถูกซ่อน** (เพราะไม่ใช่ของ EXE) → เห็น log ตามปกติ
+- `gui.py` มีตัวสำรอง (ctypes `GetConsoleProcessList` + `ShowWindow`) ซ่อน console ของตัวเองเฉพาะกรณีที่เป็นเจ้าของ เช่นเปิด `main.py` ด้วย python.exe จาก Explorer
+
 > หมายเหตุ: **ห้ามใช้ `--collect-all mcp`** — จะ import `mcp.cli` ที่ต้องใช้แพ็กเกจ `typer` และทำให้ build ล้ม (ทดสอบแล้ว)
 > คำเตือน `Failed to collect submodules for 'httpx2.websockets' ... wsproto` ระหว่าง build ไม่เป็นปัญหา (ไม่ได้ใช้ websocket)
 
@@ -493,10 +552,12 @@ dist\AI-Agent-Router.exe --mcp-stdio     :: โหมด MCP stdio
 | stdio client ได้ JSON เสีย | อย่าพิมพ์อะไรออก stdout ใน agent ที่เขียนเอง — ใช้ `logging` (ออก stderr) |
 | `421 Misdirected` / `Invalid Host header` บน /mcp | เรียกด้วย host ที่ไม่ใช่ `127.0.0.1`/`localhost` ขณะ bind 127.0.0.1 — ใช้ `http://127.0.0.1:8080/mcp` |
 | Windows Defender / SmartScreen เตือน EXE | ปกติสำหรับ EXE ที่ build เองและไม่มี signature — กด More info → Run anyway หรือ whitelist โฟลเดอร์ |
-| EXE เปิดแล้วปิดทันที | รันจาก CMD เพื่อดู error (เช่น `config error: ...` จาก YAML ผิดรูปแบบ) |
+| EXE เปิดแล้วปิดทันที / ไม่มีหน้าต่าง | รันจาก CMD (`AI-Agent-Router.exe --gui`) เพื่อดู error เช่น `config error: ...` จาก YAML ผิดรูปแบบ; ดู `logs\router.log` ข้าง EXE |
+| GUI: ไฟแดง "พอร์ต 8080 ถูกใช้งานอยู่" | เปิดโปรแกรมซ้ำอยู่แล้ว (ดูที่ taskbar) หรือโปรแกรมอื่นใช้พอร์ต — ใส่พอร์ตอื่นแล้วกด "บันทึกพอร์ต" แล้วอัปเดต URL ใน config ของ OpenCode/Cursor (แท็บคู่มืออัปเดตให้อัตโนมัติ) |
+| GUI: "บันทึกไฟล์ไม่ได้" | ย้าย EXE ไปโฟลเดอร์ที่เขียนได้ (Desktop / Documents) |
 | ภาษาไทยเพี้ยนใน PowerShell | ส่ง body เป็น UTF-8 bytes ตามตัวอย่างหัวข้อ 5 |
 
-เปิด log ละเอียด: `python main.py --log-level DEBUG --log-file logs\router.log` — ทุกบรรทัดมี `rid=<request_id>` ให้ไล่ตามได้
+เปิด log ละเอียด: `python main.py --no-gui --log-level DEBUG --log-file logs\router.log` (หรือใน GUI ติ๊ก "แสดงรายละเอียดทางเทคนิค"; GUI เขียน log ลง `logs\router.log` ข้าง EXE เสมอ) — ทุกบรรทัดมี `rid=<request_id>` ให้ไล่ตามได้
 
 ---
 
@@ -506,4 +567,5 @@ dist\AI-Agent-Router.exe --mcp-stdio     :: โหมด MCP stdio
 - ไม่มี streaming ของคำตอบ (รอคำตอบเต็มแล้วค่อยส่งกลับ)
 - ไม่มีระบบกัน loop ข้าม agent (A→B→A) อัตโนมัติ นอกจากห้าม self-call — ให้ agent ปลายทางระวังเอง
 - session ของ MCP HTTP เก็บในหน่วยความจำ — restart router แล้ว client ต้อง reconnect (OpenCode/Cursor ทำเองอัตโนมัติ)
+- GUI แสดง/แก้เฉพาะกุญแจตัวแรกใน `ROUTER_API_KEYS` (กุญแจอื่นในไฟล์ยังใช้ได้ตามเดิม) และไม่มีหน้าแก้ `config.yaml` (agent ขั้นสูง เช่น webhook ของ Cursor ยังต้องแก้ไฟล์)
 - ใช้ `mcp==2.3.0` (FastMCP เปลี่ยนชื่อเป็น `MCPServer` ใน SDK v2) — โค้ดรองรับ `mcp` 1.x (`FastMCP`) แบบ fallback ด้วย

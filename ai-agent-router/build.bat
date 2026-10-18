@@ -2,7 +2,7 @@
 REM ===========================================================================
 REM  AI Agent Router - Windows one-file build  ->  dist\AI-Agent-Router.exe
 REM  Usage:  build.bat            (run from the project folder, double-click OK)
-REM  Needs:  Python 3.11 - 3.13 (64-bit) on PATH  (py launcher or python.exe)
+REM  Needs:  Python 3.11 - 3.13 (64-bit, from python.org: includes tkinter) on PATH
 REM ===========================================================================
 setlocal EnableExtensions
 cd /d "%~dp0"
@@ -24,13 +24,21 @@ set "VPY=.venv\Scripts\python.exe"
 echo [2/4] Installing requirements ...
 "%VPY%" -m pip install --upgrade pip >nul
 "%VPY%" -m pip install -r requirements.txt || ( echo [ERROR] pip install failed & exit /b 1 )
+"%VPY%" -c "import tkinter" 2>nul || ( echo [ERROR] this Python has no tkinter - reinstall Python from python.org with "tcl/tk and IDLE" ticked & exit /b 1 )
 
 echo [3/4] Building with PyInstaller ...
 if exist build rmdir /s /q build
 if exist dist\AI-Agent-Router.exe del /q dist\AI-Agent-Router.exe
-REM  NOTE: do NOT use "--collect-all mcp": it imports mcp.cli which needs the optional
-REM        'typer' package and aborts the build. Collect the needed sub-packages instead.
-"%VPY%" -m PyInstaller --noconfirm --clean --onefile --console --name AI-Agent-Router --paths . ^
+REM  NOTES
+REM  * do NOT use "--collect-all mcp": it imports mcp.cli which needs the optional 'typer'
+REM    package and aborts the build. The needed mcp sub-packages are collected instead.
+REM  * CONSOLE exe + "--hide-console hide-early" (not --windowed):
+REM      - a console exe always has a real stdin/stdout, so "--mcp-stdio" works for OpenCode/Cursor
+REM      - when the EXE is double-clicked it owns its console, and the bootloader hides that
+REM        console right away -> the user only sees the GUI
+REM      - when started from cmd/PowerShell the console is NOT hidden (it is not ours)
+"%VPY%" -m PyInstaller --noconfirm --clean --onefile --console --hide-console hide-early ^
+  --name AI-Agent-Router --paths . ^
   --hidden-import mcp ^
   --collect-submodules mcp.server --collect-submodules mcp.shared --collect-submodules mcp.client ^
   --collect-submodules mcp.types --collect-submodules mcp.os --collect-data mcp --copy-metadata mcp ^
@@ -43,18 +51,20 @@ REM        'typer' package and aborts the build. Collect the needed sub-packages
   --collect-submodules agents ^
   --hidden-import agents.grok --hidden-import agents.cursor --hidden-import agents.opencode --hidden-import agents.http_agent ^
   --hidden-import config --hidden-import router_core --hidden-import mcp_server ^
+  --hidden-import gui --hidden-import tkinter --hidden-import tkinter.ttk --hidden-import tkinter.scrolledtext ^
+  --hidden-import tkinter.messagebox --hidden-import tkinter.font ^
   main.py
 if errorlevel 1 ( echo [ERROR] PyInstaller build failed & exit /b 1 )
 
 echo [4/4] Copying example config files next to the EXE ...
 copy /y config.yaml.example dist\config.yaml.example >nul
 copy /y .env.example dist\.env.example >nul
-if not exist dist\.env copy /y .env.example dist\.env >nul
 if exist config.yaml copy /y config.yaml dist\config.yaml >nul
+REM  no .env is copied on purpose: on first launch the GUI creates dist\.env with a fresh random key
 
 echo.
 echo  Done:  dist\AI-Agent-Router.exe
-echo  1) edit dist\.env  (ROUTER_API_KEYS, XAI_API_KEY)
-echo  2) run  dist\AI-Agent-Router.exe          -^> http://127.0.0.1:8080/health
-echo     or   dist\AI-Agent-Router.exe --mcp-stdio
+echo  - double-click it: the GUI opens, creates the Router Key and starts the server
+echo  - headless server:  dist\AI-Agent-Router.exe --no-gui
+echo  - MCP over stdio:   dist\AI-Agent-Router.exe --mcp-stdio
 endlocal
