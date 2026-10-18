@@ -1,0 +1,10 @@
+# AI Agent Router — pinned, tested together on Python 3.13 (Linux) / intended for Windows 10/11 + Python 3.11-3.13
+fastapi==0.143.3
+uvicorn==0.54.0
+mcp==2.3.0
+pydantic==2.14.1
+PyYAML==6.0.3
+httpx==0.28.1
+python-dotenv==1.2.4
+# build only (build.bat)
+pyinstaller==6.22.3

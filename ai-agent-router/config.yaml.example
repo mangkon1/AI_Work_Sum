@@ -1,0 +1,80 @@
+# ---------------------------------------------------------------------------
+# AI Agent Router — config.yaml   (copy to config.yaml next to main.py / the EXE)
+# ${ENV_VAR} and ${ENV_VAR:-default} are replaced with environment variables (.env included).
+# Environment variables (ROUTER_HOST, ROUTER_PORT, ROUTER_API_KEYS, ...) override these values.
+# ---------------------------------------------------------------------------
+
+server:
+  host: 127.0.0.1
+  port: 8080
+
+logging:
+  level: INFO            # DEBUG | INFO | WARNING | ERROR
+  file: logs/router.log  # relative to the EXE / main.py folder; remove to disable
+
+auth:
+  # Each key maps to the agent that owns it -> from_agent is validated (403 on mismatch).
+  # Keys from ROUTER_API_KEYS in .env are merged on top of this list.
+  api_keys:
+    - key: ${OPENCODE_ROUTER_KEY:-}
+      agent: opencode
+    - key: ${CURSOR_ROUTER_KEY:-}
+      agent: cursor
+  #  - "plain-key-that-can-act-as-any-agent"
+  allow_anonymous: false   # true = accept requests without a key when NO keys are configured (local testing only)
+
+mcp:
+  enabled: true
+  path: /mcp               # streamable HTTP endpoint
+  sse_enabled: true        # legacy SSE at /sse + /messages/
+  require_auth: true       # X-API-Key (or Authorization: Bearer) required on /mcp and /sse
+
+default_from_agent: opencode
+allow_self_call: false     # target == from_agent -> 400
+max_message_chars: 200000
+
+# ---------------------------------------------------------------------------
+# Agents: name -> settings. `type` = grok | http | cursor | opencode | "module:Class"
+# Only the agent named in "target" is ever called (no broadcast).
+# ---------------------------------------------------------------------------
+agents:
+  grok:
+    type: grok
+    enabled: true
+    description: xAI Grok (chat completions)
+    api_key: ${XAI_API_KEY}
+    model: ${GROK_MODEL:-grok-4.7}
+    timeout: 120
+    # temperature: 0.7
+    # max_tokens: 4096
+    # system_prompt: "You are Grok, a senior reviewer..."
+
+  opencode:
+    type: opencode
+    enabled: true
+    description: OpenCode main agent via `opencode serve`
+    base_url: ${OPENCODE_BASE_URL:-}       # e.g. http://127.0.0.1:4096 ; empty = not configured
+    password: ${OPENCODE_SERVER_PASSWORD:-}
+    # agent: build
+    # model: { providerID: xai, modelID: grok-4.7 }
+    reuse_session: true
+    timeout: 600
+
+  cursor:
+    type: cursor
+    enabled: true
+    description: Cursor (placeholder; optional webhook bridge)
+    webhook_url: ${CURSOR_WEBHOOK_URL:-}
+    # headers:
+    #   Authorization: "Bearer ${CURSOR_WEBHOOK_TOKEN}"
+    timeout: 300
+
+  # Example: any agent that accepts JSON over HTTP — config only, no code.
+  # echo:
+  #   type: http
+  #   url: http://127.0.0.1:9001/invoke
+  #   method: POST
+  #   headers:
+  #     Authorization: "Bearer ${ECHO_TOKEN:-}"
+  #   response_field: response   # dotted path in the JSON reply, e.g. data.text
+  #   timeout: 60
