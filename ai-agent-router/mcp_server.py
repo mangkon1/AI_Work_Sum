@@ -159,7 +159,7 @@ class MCPAuthMiddleware:
             try:
                 self.router.authenticate(extract_api_key(headers), transport="mcp-http")
             except RouterError as exc:
-                log.warning("MCP auth rejected for %s: %s", scope["path"], exc.message)
+                log.debug("MCP auth rejected for %s: %s", scope["path"], exc.message)
                 resp = JSONResponse({"error": {"code": exc.code, "message": exc.message}},
                                     status_code=exc.status_code)
                 await resp(scope, receive, send)

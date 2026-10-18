@@ -62,15 +62,39 @@ def new_request_id() -> str:
 class Router:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
-        self.agents: dict[str, BaseAgent] = {}
-        self.load_errors: dict[str, str] = {}
+        self.agents, self.load_errors = self._build_agents(settings)
+        self._retired: list[BaseAgent] = []
+        log.info("Registered agents: %s", ", ".join(f"{a.name}({a.type_name})" for a in self.agents.values()) or "-")
+
+    @staticmethod
+    def _build_agents(settings: Settings) -> tuple[dict[str, BaseAgent], dict[str, str]]:
+        agents: dict[str, BaseAgent] = {}
+        errors: dict[str, str] = {}
         for name, cfg in settings.agents.items():
             try:
-                self.agents[name] = create_agent(name, cfg)
+                agents[name] = create_agent(name, cfg)
             except Exception as exc:  # bad config for one agent must not kill the server
-                self.load_errors[name] = str(exc)
+                errors[name] = str(exc)
                 log.error("Failed to create agent '%s': %s", name, exc)
-        log.info("Registered agents: %s", ", ".join(f"{a.name}({a.type_name})" for a in self.agents.values()) or "-")
+        return agents, errors
+
+    def reload(self, settings: Settings) -> None:
+        """Hot-swap the agent registry + keys (called by the GUI after saving; thread-safe enough:
+        the dict references are replaced atomically, in-flight calls keep their old agent object).
+        Host/port changes still need a server restart."""
+        agents, errors = self._build_agents(settings)
+        old = list(self.agents.values())
+        self.settings, self.agents, self.load_errors = settings, agents, errors
+        self._retired.extend(old)
+        log.info("Reloaded agents: %s", ", ".join(f"{a.name}({a.type_name})" for a in agents.values()) or "-")
+
+    async def _close_retired(self) -> None:
+        retired, self._retired = self._retired, []
+        for agent in retired:
+            try:
+                await agent.aclose()
+            except Exception:  # pragma: no cover
+                pass
 
     # ------------------------------------------------------------- auth
     @property
@@ -119,6 +143,8 @@ class Router:
                      from_agent: str | None, caller: Caller, request_id: str | None = None) -> InvokeResult:
         rid = request_id or new_request_id()
         t0 = time.perf_counter()
+        if self._retired:
+            await self._close_retired()
         target = (target or "").strip()
         try:
             fa = self.resolve_from_agent(caller, from_agent)
@@ -178,11 +204,14 @@ class Router:
                               f"Unknown target agent '{target}'. Registered: {', '.join(sorted(self.agents)) or '-'}")
         if not agent.enabled:
             raise RouterError(503, "agent_disabled", f"Agent '{target}' is disabled in config")
+        if agent.missing_env:
+            raise RouterError(503, "agent_not_configured", agent.not_configured_reason())
         if target == fa and not self.settings.allow_self_call:
             raise RouterError(400, "self_call", f"Agent '{fa}' cannot call itself (target == from_agent)")
         return agent
 
     async def aclose(self) -> None:
+        await self._close_retired()
         for agent in self.agents.values():
             try:
                 await agent.aclose()

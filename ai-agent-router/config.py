@@ -82,6 +82,14 @@ def load_env_files() -> list[Path]:
     return loaded
 
 
+def config_write_path(config_path: str | Path | None = None) -> Path:
+    """config.yaml the GUI reads/writes: --config / ROUTER_CONFIG, else an existing one, else next to the EXE."""
+    explicit = config_path or os.environ.get("ROUTER_CONFIG")
+    if explicit:
+        return Path(explicit).expanduser().resolve()
+    return find_file("config.yaml") or find_file("config.yml") or (app_base_dir() / "config.yaml")
+
+
 def env_file_path() -> Path:
     """The .env the GUI writes to: always the one next to the EXE / main.py."""
     return app_base_dir() / ".env"
@@ -93,7 +101,40 @@ def generate_api_key() -> str:
     return "ar-" + secrets.token_urlsafe(32)
 
 
+_ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _ENV_LINE = re.compile(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=")
+
+
+def atomic_write_text(path: Path, text: str) -> None:
+    """Write a file so that a crash / hard kill / power loss never leaves it half-written.
+
+    tmp file in the same folder -> flush + fsync -> os.replace (atomic on Windows and POSIX)
+    -> fsync the directory (POSIX) so the rename itself is durable.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.parent / f"{path.name}.{os.getpid()}.tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(text)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    finally:
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+    if os.name != "nt":
+        try:
+            fd = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+        except OSError:
+            pass
 
 
 def update_env_file(updates: dict[str, str | None], path: Path | None = None) -> Path:
@@ -103,6 +144,11 @@ def update_env_file(updates: dict[str, str | None], path: Path | None = None) ->
     restarted server (in the same process) sees them immediately.
     """
     path = path or env_file_path()
+    for k, v in updates.items():
+        if not _ENV_NAME.fullmatch(k):
+            raise ValueError(f"invalid .env variable name: {k!r}")
+        if v is not None and ("\n" in v or "\r" in v):
+            raise ValueError(f"{k}: value must be a single line")
     lines: list[str] = []
     if path.is_file():
         lines = path.read_text(encoding="utf-8").splitlines()
@@ -126,16 +172,70 @@ def update_env_file(updates: dict[str, str | None], path: Path | None = None) ->
         if not lines:
             out.append("# AI Agent Router settings (written by the GUI; safe to edit by hand)")
         out += [f"{k}={updates[k]}" for k in new_keys]
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text("\n".join(out) + "\n", encoding="utf-8")
-    os.replace(tmp, path)
+    tidy: list[str] = []
+    for line in out:  # no runs of blank lines left behind by removed keys
+        if not line.strip() and (not tidy or not tidy[-1].strip()):
+            continue
+        tidy.append(line)
+    while tidy and not tidy[-1].strip():
+        tidy.pop()
+    atomic_write_text(path, "\n".join(tidy) + "\n")
     for k, v in updates.items():
         if v is None:
             os.environ.pop(k, None)
         else:
             os.environ[k] = v
     return path
+
+
+def _env_file_router_keys(path: Path) -> dict[str, str | None]:
+    if not path.is_file():
+        return {}
+    try:
+        from dotenv import dotenv_values
+        raw = dotenv_values(path).get("ROUTER_API_KEYS") or ""
+    except Exception:
+        return {}
+    return {k: a for k, a in parse_api_keys(raw).items() if not is_placeholder_key(k)}
+
+
+def ensure_router_key(config_path: str | None = None) -> tuple[str, bool, str | None]:
+    """Make sure a real router key exists AND is persisted in the .env next to the EXE.
+
+    Called at startup (before any window/server), so a hard kill can never lose the key.
+    Returns (main_key, generated_now, warning_or_None).
+      * placeholder keys copied from .env.example ("change-me-...") count as "no key"
+      * a key that only exists in the process environment or in a .env in the *current
+        directory* is copied into the EXE-folder .env (that is the file users look for)
+      * keys defined in config.yaml (auth.api_keys) are used as-is, nothing is written
+    """
+    load_env_files()
+    target = env_file_path()
+    env_keys = {k: a for k, a in parse_api_keys(os.environ.get("ROUTER_API_KEYS", "")).items()
+                if not is_placeholder_key(k)}
+    try:
+        if env_keys:
+            if not _env_file_router_keys(target):
+                update_env_file({"ROUTER_API_KEYS": ",".join(f"{k}:{a}" if a else k for k, a in env_keys.items())},
+                                target)
+            return next(iter(env_keys)), False, None
+        try:
+            cfg_keys = load_settings(config_path).api_keys
+        except Exception:
+            cfg_keys = {}
+        if cfg_keys:
+            return next(iter(cfg_keys)), False, None
+        key = generate_api_key()
+        os.environ["ROUTER_API_KEYS"] = key  # works for this session even if the write below fails
+        update_env_file({"ROUTER_API_KEYS": key}, target)
+        return key, True, None
+    except (OSError, ValueError) as exc:
+        key = next(iter(env_keys), None) or os.environ.get("ROUTER_API_KEYS", "").split(",")[0].split(":")[0]
+        if not key or is_placeholder_key(key):
+            key = generate_api_key()
+            os.environ["ROUTER_API_KEYS"] = key
+        return key, not env_keys, (f"บันทึกไฟล์ {target} ไม่ได้ ({exc}) — กุญแจจะใช้ได้เฉพาะรอบนี้. "
+                                   f"ย้ายโปรแกรมไปไว้ในโฟลเดอร์ที่เขียนไฟล์ได้ (เช่น Documents)")
 
 
 # --------------------------------------------------------------------------- #
@@ -154,6 +254,38 @@ def substitute_env(value: Any) -> Any:
     if isinstance(value, dict):
         return {k: substitute_env(v) for k, v in value.items()}
     return value
+
+
+def env_refs(value: Any) -> list[tuple[str, bool]]:
+    """All ${VAR} references in a (nested) value as (name, has_default)."""
+    out: list[tuple[str, bool]] = []
+    if isinstance(value, str):
+        out += [(m.group(1), m.group(2) is not None) for m in _ENV_PATTERN.finditer(value)]
+    elif isinstance(value, list):
+        for v in value:
+            out += env_refs(v)
+    elif isinstance(value, dict):
+        for v in value.values():
+            out += env_refs(v)
+    return out
+
+
+def missing_env_vars(value: Any) -> list[str]:
+    """${VAR} references (without a :-default) whose variable is unset or empty."""
+    seen: list[str] = []
+    for name, has_default in env_refs(value):
+        if not has_default and not os.environ.get(name, "").strip() and name not in seen:
+            seen.append(name)
+    return seen
+
+
+#: values copied from .env.example / docs that must never count as a real key
+PLACEHOLDER_KEY_PREFIXES = ("change-me", "changeme", "your-", "your_", "<", "xxx", "replace-me")
+
+
+def is_placeholder_key(key: str) -> bool:
+    k = key.strip().lower()
+    return not k or k.startswith(PLACEHOLDER_KEY_PREFIXES)
 
 
 def _as_bool(value: Any, default: bool = False) -> bool:
@@ -252,7 +384,15 @@ def load_settings(config_path: str | None = None) -> Settings:
             data = yaml.safe_load(fh) or {}
         if not isinstance(data, dict):
             raise ValueError(f"{path}: top level must be a mapping")
-        data = substitute_env(data)
+    raw_agents = data.get("agents")
+    missing_by_agent: dict[str, list[str]] = {}
+    if isinstance(raw_agents, dict):
+        for k, v in raw_agents.items():
+            missing_by_agent[str(k)] = missing_env_vars(v or {})
+            if isinstance(k, bool) or k is None:
+                log.warning("config.yaml: an agent name was read as %r (YAML treats on/off/yes/no/true/false/null "
+                            "as booleans) - put the name in quotes, e.g. \"off\":", k)
+    data = substitute_env(data)
 
     server = data.get("server") or {}
     auth = data.get("auth") or {}
@@ -283,7 +423,11 @@ def load_settings(config_path: str | None = None) -> Settings:
         agents = {k: dict(v) for k, v in DEFAULT_AGENTS.items()}
     if not isinstance(agents, dict):
         raise ValueError("config.yaml: 'agents' must be a mapping of name -> settings")
-    s.agents = {str(k): (v or {}) for k, v in agents.items()}
+    s.agents = {}
+    for k, v in agents.items():
+        cfg = dict(v or {})
+        cfg["_missing_env"] = missing_by_agent.get(str(k), [])
+        s.agents[str(k)] = cfg
 
     # ---- environment overrides --------------------------------------------
     env = os.environ
@@ -304,6 +448,12 @@ def load_settings(config_path: str | None = None) -> Settings:
         s.mcp_require_auth = _as_bool(env["ROUTER_MCP_REQUIRE_AUTH"])
     if "ROUTER_DEFAULT_FROM_AGENT" in env and env["ROUTER_DEFAULT_FROM_AGENT"]:
         s.default_from_agent = env["ROUTER_DEFAULT_FROM_AGENT"]
+
+    placeholders = [k for k in s.api_keys if is_placeholder_key(k)]
+    for k in placeholders:
+        log.warning("ignoring placeholder API key '%s...' (copied from .env.example?) - set a real ROUTER_API_KEYS",
+                    k[:10])
+        s.api_keys.pop(k, None)
 
     if not s.mcp_path.startswith("/"):
         s.mcp_path = "/" + s.mcp_path
@@ -353,11 +503,15 @@ def setup_logging(level: str = "INFO", log_file: str | None = None, *, stdio_mod
         p = Path(log_file)
         if not p.is_absolute():
             p = app_base_dir() / p
-        p.parent.mkdir(parents=True, exist_ok=True)
-        fh = logging.handlers.RotatingFileHandler(p, maxBytes=5_000_000, backupCount=3, encoding="utf-8")
-        fh.setFormatter(fmt)
-        fh.addFilter(flt)
-        root.addHandler(fh)
+        try:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            fh = logging.handlers.RotatingFileHandler(p, maxBytes=5_000_000, backupCount=3, encoding="utf-8")
+        except OSError as exc:  # read-only folder, Controlled Folder Access ... -> keep running without a file log
+            logging.getLogger("router.config").warning("cannot write log file %s: %s", p, exc)
+        else:
+            fh.setFormatter(fmt)
+            fh.addFilter(flt)
+            root.addHandler(fh)
 
     # keep 3rd-party noise down
     for noisy in ("httpx", "httpcore", "httpx2"):
