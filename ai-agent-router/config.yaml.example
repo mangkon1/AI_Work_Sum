@@ -76,5 +76,34 @@ agents:
   #   method: POST
   #   headers:
   #     Authorization: "Bearer ${ECHO_TOKEN:-}"
-  #   response_field: response   # dotted path in the JSON reply, e.g. data.text
+  #   response_path: response    # path in the JSON reply, e.g. data.text or choices[0].message.content
   #   timeout: 60
+
+  # Example: any OpenAI-compatible provider (OpenAI, Gemini, OpenRouter, Groq, Ollama, LM Studio ...)
+  # The GUI ("AI ปลายทาง" -> เพิ่ม) writes entries like this; the key itself lives in .env.
+  # gpt:
+  #   type: openai-compatible
+  #   url: https://api.openai.com/v1          # base URL or full .../chat/completions URL
+  #   api_key: ${GPT_API_KEY}
+  #   model: gpt-5.5
+  #   # system_prompt: "You are a careful code reviewer"
+  #   # temperature: 0.2
+
+  # Example: Anthropic Claude (Messages API) with the generic http type + body template
+  # claude:
+  #   type: http
+  #   url: https://api.anthropic.com/v1/messages
+  #   auth_type: header                      # none | bearer | header
+  #   auth_header: x-api-key
+  #   api_key: ${CLAUDE_API_KEY}
+  #   headers: { anthropic-version: "2023-06-01" }
+  #   model: claude-sonnet-5-5
+  #   max_tokens: 4096
+  #   body_template:
+  #     model: "{model}"
+  #     max_tokens: "{max_tokens}"
+  #     system: "{system_prompt}"
+  #     messages: [{ role: user, content: "{prompt}" }]
+  #   response_path: content[0].text
+  #
+  # NOTE: quote agent names that YAML reads as booleans: "off":, "on":, "yes":, "no":

@@ -49,9 +49,9 @@ REM      - when started from cmd/PowerShell the console is NOT hidden (it is not
   --collect-all jsonschema --collect-all jsonschema_specifications --collect-all opentelemetry ^
   --hidden-import yaml --hidden-import dotenv --hidden-import python_multipart ^
   --collect-submodules agents ^
-  --hidden-import agents.grok --hidden-import agents.cursor --hidden-import agents.opencode --hidden-import agents.http_agent ^
+  --hidden-import agents.grok --hidden-import agents.cursor --hidden-import agents.opencode --hidden-import agents.http_agent --hidden-import agents.openai_compat ^
   --hidden-import config --hidden-import router_core --hidden-import mcp_server ^
-  --hidden-import gui --hidden-import tkinter --hidden-import tkinter.ttk --hidden-import tkinter.scrolledtext ^
+  --hidden-import gui --hidden-import gui_agents --hidden-import agent_store --hidden-import presets --hidden-import tkinter --hidden-import tkinter.ttk --hidden-import tkinter.scrolledtext ^
   --hidden-import tkinter.messagebox --hidden-import tkinter.font ^
   main.py
 if errorlevel 1 ( echo [ERROR] PyInstaller build failed & exit /b 1 )
