@@ -41,7 +41,13 @@ DEFAULT_AGENTS: dict[str, dict[str, Any]] = {
 # Paths
 # --------------------------------------------------------------------------- #
 def app_base_dir() -> Path:
-    """Directory of the EXE when frozen (PyInstaller), otherwise of this source file."""
+    """Directory of the EXE when frozen (PyInstaller), otherwise of this source file.
+
+    Override with the ROUTER_HOME environment variable (portable setups / tests).
+    """
+    home = os.environ.get("ROUTER_HOME")
+    if home:
+        return Path(home).expanduser().resolve()
     if getattr(sys, "frozen", False):
         return Path(sys.executable).resolve().parent
     return Path(__file__).resolve().parent
@@ -74,6 +80,62 @@ def load_env_files() -> list[Path]:
             load_dotenv(p, override=False)
             loaded.append(p)
     return loaded
+
+
+def env_file_path() -> Path:
+    """The .env the GUI writes to: always the one next to the EXE / main.py."""
+    return app_base_dir() / ".env"
+
+
+def generate_api_key() -> str:
+    """Strong random key (~256 bit), URL-safe so it can be pasted anywhere."""
+    import secrets
+    return "ar-" + secrets.token_urlsafe(32)
+
+
+_ENV_LINE = re.compile(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=")
+
+
+def update_env_file(updates: dict[str, str | None], path: Path | None = None) -> Path:
+    """Insert/replace KEY=value lines in .env, keeping comments and unrelated lines.
+
+    A value of None removes the key. Also applies the values to os.environ so a
+    restarted server (in the same process) sees them immediately.
+    """
+    path = path or env_file_path()
+    lines: list[str] = []
+    if path.is_file():
+        lines = path.read_text(encoding="utf-8").splitlines()
+    done: set[str] = set()
+    out: list[str] = []
+    for line in lines:
+        m = _ENV_LINE.match(line)
+        if m and m.group(1) in updates:
+            key = m.group(1)
+            if key in done:
+                continue  # drop duplicates
+            done.add(key)
+            if updates[key] is not None:
+                out.append(f"{key}={updates[key]}")
+            continue
+        out.append(line)
+    new_keys = [k for k in updates if k not in done and updates[k] is not None]
+    if new_keys:
+        if out and out[-1].strip():
+            out.append("")
+        if not lines:
+            out.append("# AI Agent Router settings (written by the GUI; safe to edit by hand)")
+        out += [f"{k}={updates[k]}" for k in new_keys]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text("\n".join(out) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
+    for k, v in updates.items():
+        if v is None:
+            os.environ.pop(k, None)
+        else:
+            os.environ[k] = v
+    return path
 
 
 # --------------------------------------------------------------------------- #
@@ -280,10 +342,12 @@ def setup_logging(level: str = "INFO", log_file: str | None = None, *, stdio_mod
         sys.stderr.reconfigure(errors="backslashreplace")  # type: ignore[union-attr]
     except (AttributeError, ValueError):
         pass
-    console = logging.StreamHandler(sys.stderr)
-    console.setFormatter(fmt)
-    console.addFilter(flt)
-    root.addHandler(console)
+    # a --windowed / hidden-console process may have no stderr at all
+    if sys.stderr is not None:
+        console = logging.StreamHandler(sys.stderr)
+        console.setFormatter(fmt)
+        console.addFilter(flt)
+        root.addHandler(console)
 
     if log_file:
         p = Path(log_file)

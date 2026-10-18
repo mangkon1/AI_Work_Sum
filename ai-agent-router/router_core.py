@@ -87,11 +87,15 @@ class Router:
                               "No API keys configured on the router. Set ROUTER_API_KEYS in .env "
                               "(or auth.api_keys in config.yaml).")
         if not api_key:
+            log.warning("auth rejected (%s): missing API key", transport,
+                        extra={"event": "auth_rejected", "transport": transport, "reason": "missing"})
             raise RouterError(401, "missing_api_key", "Missing X-API-Key header")
         for key, agent in keys.items():
             # constant-time comparison
             if hmac.compare_digest(key.encode(), api_key.encode()):
                 return Caller(key_id=f"key:{agent or 'any'}:{key[:3]}***", bound_agent=agent, transport=transport)
+        log.warning("auth rejected (%s): invalid API key", transport,
+                    extra={"event": "auth_rejected", "transport": transport, "reason": "invalid"})
         raise RouterError(401, "invalid_api_key", "Invalid API key")
 
     # ------------------------------------------------------------- listing
@@ -114,11 +118,50 @@ class Router:
     async def invoke(self, *, target: str, message: str, context: dict[str, Any] | None,
                      from_agent: str | None, caller: Caller, request_id: str | None = None) -> InvokeResult:
         rid = request_id or new_request_id()
-        extra = {"request_id": rid}
         t0 = time.perf_counter()
         target = (target or "").strip()
-        fa = self.resolve_from_agent(caller, from_agent)
+        try:
+            fa = self.resolve_from_agent(caller, from_agent)
+            agent = self._validate(target, message, context, fa)
+        except RouterError as exc:
+            # rejected before reaching an agent (404 unknown target, 400 self-call, 403 ...)
+            who = (from_agent or "").strip() or caller.bound_agent or self.settings.default_from_agent
+            log.warning("invoke %s -> %s rejected %s: %s", who, target or "?", exc.status_code,
+                        exc.message, extra={"request_id": rid, "event": "invoke_fail",
+                                            "from_agent": who,
+                                            "target": target or "?", "transport": caller.transport,
+                                            "status_code": exc.status_code, "error": exc.message,
+                                            "code": exc.code})
+            raise
+        extra: dict[str, Any] = {"request_id": rid}
 
+        # structured fields (event/from_agent/target/...) are used by the GUI log panel
+        extra.update(from_agent=fa, target=target, transport=caller.transport)
+        log.info("invoke %s -> %s via %s (%s, %d chars)", fa, target, caller.transport, caller.key_id,
+                 len(message), extra={**extra, "event": "invoke_start"})
+        try:
+            response = await agent.invoke(message, context or {}, fa)
+        except AgentError as exc:
+            elapsed = round((time.perf_counter() - t0) * 1000, 1)
+            log.warning("invoke %s -> %s FAILED %s in %.1fms: %s", fa, target, exc.status_code, elapsed,
+                        exc.message, extra={**extra, "event": "invoke_fail", "elapsed_ms": elapsed,
+                                            "status_code": exc.status_code, "error": exc.message,
+                                            "code": exc.code})
+            raise RouterError(exc.status_code, exc.code, exc.message) from exc
+        except Exception as exc:  # unexpected bug in an adapter
+            log.exception("invoke %s -> %s crashed", fa, target,
+                          extra={**extra, "event": "invoke_fail", "status_code": 502, "error": str(exc),
+                                 "code": "agent_crashed"})
+            raise RouterError(502, "agent_crashed", f"{target}: {exc.__class__.__name__}: {exc}") from exc
+
+        elapsed = round((time.perf_counter() - t0) * 1000, 1)
+        log.info("invoke %s -> %s OK in %.1fms (%d chars)", fa, target, elapsed, len(response),
+                 extra={**extra, "event": "invoke_ok", "elapsed_ms": elapsed})
+        return InvokeResult(target=target, from_agent=fa, response=response, status="ok",
+                            elapsed_ms=elapsed, request_id=rid)
+
+    def _validate(self, target: str, message: str, context: dict[str, Any] | None, fa: str) -> BaseAgent:
+        """Request checks before an agent is called. Returns the target agent or raises RouterError."""
         if not target:
             raise RouterError(400, "missing_target", "'target' is required (routing is by explicit name only)")
         if not isinstance(message, str) or not message.strip():
@@ -137,24 +180,7 @@ class Router:
             raise RouterError(503, "agent_disabled", f"Agent '{target}' is disabled in config")
         if target == fa and not self.settings.allow_self_call:
             raise RouterError(400, "self_call", f"Agent '{fa}' cannot call itself (target == from_agent)")
-
-        log.info("invoke %s -> %s via %s (%s, %d chars)", fa, target, caller.transport, caller.key_id,
-                 len(message), extra=extra)
-        try:
-            response = await agent.invoke(message, context or {}, fa)
-        except AgentError as exc:
-            elapsed = round((time.perf_counter() - t0) * 1000, 1)
-            log.warning("invoke %s -> %s FAILED %s in %.1fms: %s", fa, target, exc.status_code, elapsed,
-                        exc.message, extra=extra)
-            raise RouterError(exc.status_code, exc.code, exc.message) from exc
-        except Exception as exc:  # unexpected bug in an adapter
-            log.exception("invoke %s -> %s crashed", fa, target, extra=extra)
-            raise RouterError(502, "agent_crashed", f"{target}: {exc.__class__.__name__}: {exc}") from exc
-
-        elapsed = round((time.perf_counter() - t0) * 1000, 1)
-        log.info("invoke %s -> %s OK in %.1fms (%d chars)", fa, target, elapsed, len(response), extra=extra)
-        return InvokeResult(target=target, from_agent=fa, response=response, status="ok",
-                            elapsed_ms=elapsed, request_id=rid)
+        return agent
 
     async def aclose(self) -> None:
         for agent in self.agents.values():

@@ -1,8 +1,11 @@
 """
 AI Agent Router — entrypoint.
 
-    python main.py                       # HTTP server on http://127.0.0.1:8080  (REST + MCP at /mcp)
-    python main.py --port 9000 --host 0.0.0.0
+    python main.py                       # no args  -> desktop GUI (Tkinter); server is started from the GUI
+    python main.py --gui                 # force the GUI (may be combined with --config/--port/--host)
+    python main.py --no-gui              # headless HTTP server on http://127.0.0.1:8080 (REST + MCP at /mcp)
+    python main.py --headless            # same as --no-gui
+    python main.py --port 9000 --host 0.0.0.0   # any server flag without --gui -> headless (as before)
     python main.py --config D:\\router\\config.yaml
     python main.py --mcp-stdio           # MCP over stdio (for OpenCode/Cursor "local" MCP command)
 
@@ -21,13 +24,14 @@ import argparse
 import asyncio
 import contextlib
 import logging
+import os
 import sys
 import time
 from typing import Any, AsyncIterator
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 from config import APP_NAME, APP_VERSION, Settings, load_settings, setup_logging
@@ -113,6 +117,21 @@ def create_app(settings: Settings, router: Router | None = None) -> FastAPI:
         return router.authenticate(extract_api_key(request.headers), transport="http")
 
     # ---------------------------------------------------------------- routes
+    @app.get("/", include_in_schema=False)
+    async def index() -> HTMLResponse:
+        # friendly landing page for people who click the URL in the GUI
+        rows = "".join(
+            f"<tr><td>{a['name']}</td><td>{a['type']}</td><td>{'พร้อมใช้' if a['enabled'] and a['configured'] else ('ปิด' if not a['enabled'] else 'ยังไม่ตั้งค่า')}</td></tr>"
+            for a in router.list_agents())
+        return HTMLResponse(
+            "<!doctype html><html lang='th'><head><meta charset='utf-8'><title>AI Agent Router</title>"
+            "<style>body{font-family:'Leelawadee UI',Tahoma,sans-serif;max-width:760px;margin:40px auto;color:#222}"
+            "td,th{padding:4px 12px;border-bottom:1px solid #ddd}code{background:#f3f3f3;padding:2px 5px}</style></head><body>"
+            f"<h2>✔ AI Agent Router กำลังทำงาน</h2><p>ตัวกลางให้ AI หลายตัวส่งงานหากันตามชื่อ (v{APP_VERSION})</p>"
+            f"<p>MCP URL: <code>http://{settings.host}:{settings.port}{settings.mcp_path}</code> (ต้องส่ง header <code>X-API-Key</code>)</p>"
+            f"<table><tr><th>Agent</th><th>ชนิด</th><th>สถานะ</th></tr>{rows}</table>"
+            "<p><a href='/health'>/health</a> · <a href='/docs'>/docs (ทดลองเรียก API)</a></p></body></html>")
+
     @app.get("/health")
     async def health() -> dict[str, Any]:
         return {
@@ -213,14 +232,38 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--port", type=int, help="bind port (default 8080)")
     p.add_argument("--config", help="path to config.yaml (default: next to the EXE, then cwd)")
     p.add_argument("--mcp-stdio", action="store_true", help="run as an MCP server over stdio instead of HTTP")
+    p.add_argument("--gui", action="store_true", help="open the desktop GUI (default when started without arguments)")
+    p.add_argument("--no-gui", "--headless", dest="no_gui", action="store_true",
+                   help="run the HTTP server without the GUI (console / service mode)")
     p.add_argument("--log-level", help="DEBUG / INFO / WARNING / ERROR")
     p.add_argument("--log-file", help="also write logs to this file")
     p.add_argument("--version", action="version", version=f"{APP_NAME} {APP_VERSION}")
     return p.parse_args(argv)
 
 
+def wants_gui(argv: list[str], args: argparse.Namespace) -> bool:
+    """GUI if --gui, or if started with NO arguments at all (double-click). Everything else = headless."""
+    if args.mcp_stdio or args.no_gui:
+        return False
+    if args.gui:
+        return True
+    if os.environ.get("ROUTER_NO_GUI", "").strip().lower() in ("1", "true", "yes", "on"):
+        return False
+    return len(argv) == 0
+
+
 def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
     args = parse_args(argv)
+
+    if wants_gui(argv, args):
+        try:
+            import gui  # Tkinter; imported lazily so headless/stdio never needs Tk
+            return gui.run_gui(create_app=create_app, config_path=args.config, host=args.host,
+                               port=args.port, log_level=args.log_level)
+        except ImportError as exc:  # includes gui.GuiUnavailable (no tkinter / no display)
+            print(f"[AI Agent Router] GUI unavailable ({exc}); starting headless server instead.",
+                  file=sys.stderr)
     try:
         settings = load_settings(args.config)
     except Exception as exc:
