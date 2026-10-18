@@ -13,6 +13,7 @@ Only stdlib (tkinter) — nothing extra to install.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -37,9 +38,12 @@ try:
 except Exception as _exc:  # pragma: no cover - depends on the Python build
     raise GuiUnavailable(f"tkinter is not available: {_exc}") from _exc
 
-from config import (APP_NAME, APP_VERSION, Settings, app_base_dir, env_file_path, generate_api_key,
-                    load_env_files, load_settings, parse_api_keys, setup_logging, update_env_file)
+from config import (APP_NAME, APP_VERSION, Settings, app_base_dir, config_write_path, ensure_router_key,
+                    env_file_path, generate_api_key, is_placeholder_key, load_env_files, load_settings,
+                    parse_api_keys, setup_logging, update_env_file)
 from router_core import Router
+import agent_store
+import gui_agents
 
 log = logging.getLogger("router.gui")
 
@@ -51,9 +55,10 @@ MONO_CANDIDATES = ("Consolas", "Cascadia Mono", "Noto Sans Mono", "DejaVu Sans M
 
 AGENT_NOTES = {
     "grok": "ต้องใส่ XAI_API_KEY (ช่อง \"กุญแจ xAI\" ด้านซ้าย) แล้วกดบันทึก",
-    "cursor": "ส่งงานให้ Cursor: ต้องตั้ง webhook (ขั้นสูง) • ส่วน Cursor เรียกโปรแกรมนี้ผ่าน MCP ได้เลย",
-    "opencode": "ส่งงานให้ OpenCode: ต้องเปิด opencode serve (ขั้นสูง) • ส่วน OpenCode เรียกโปรแกรมนี้ผ่าน MCP ได้เลย",
-    "http": "ส่งงานต่อไปยัง URL ที่ตั้งไว้ใน config.yaml",
+    "cursor": "ส่งงานให้ Cursor: ต้องตั้ง webhook (ขั้นสูง, กด \"แก้ไข\") • ส่วน Cursor เรียกโปรแกรมนี้ผ่าน MCP ได้เลย",
+    "opencode": "ส่งงานให้ OpenCode: ต้องเปิด opencode serve แล้วใส่ Base URL (กด \"แก้ไข\") • "
+                "ส่วน OpenCode เรียกโปรแกรมนี้ผ่าน MCP ได้เลย",
+    "http": "ส่งงานต่อไปยัง URL ที่ตั้งไว้ — กด \"แก้ไข\" เพื่อใส่ URL",
 }
 TRANSPORT_TH = {"http": "REST API", "mcp-http": "MCP", "mcp-stdio": "MCP (stdio)"}
 ERROR_TH = {
@@ -118,32 +123,12 @@ def port_is_free(host: str, port: int) -> bool:
 
 
 def env_router_keys() -> dict[str, str | None]:
-    return parse_api_keys(os.environ.get("ROUTER_API_KEYS", ""))
+    return {k: a for k, a in parse_api_keys(os.environ.get("ROUTER_API_KEYS", "")).items()
+            if not is_placeholder_key(k)}
 
 
 def format_env_keys(keys: dict[str, str | None]) -> str:
     return ",".join(f"{k}:{a}" if a else k for k, a in keys.items())
-
-
-def ensure_router_key(config_path: str | None) -> tuple[str, bool, str | None]:
-    """Return (main_key, generated_now, warning). Generates + saves a key on first run."""
-    load_env_files()
-    keys = env_router_keys()
-    if keys:
-        return next(iter(keys)), False, None
-    try:
-        cfg_keys = load_settings(config_path).api_keys
-    except Exception:
-        cfg_keys = {}
-    if cfg_keys:
-        return next(iter(cfg_keys)), False, None
-    key = generate_api_key()
-    try:
-        update_env_file({"ROUTER_API_KEYS": key})
-        return key, True, None
-    except OSError as exc:
-        os.environ["ROUTER_API_KEYS"] = key  # still works for this session
-        return key, True, f"บันทึกไฟล์ .env ไม่ได้ ({exc}) — กุญแจจะใช้ได้เฉพาะรอบนี้"
 
 
 # ---------------------------------------------------------------- logging bridge
@@ -201,7 +186,7 @@ class ServerThread:
     def __init__(self, create_app: Callable[[Settings], Any], settings: Settings) -> None:
         import uvicorn
         self.settings = settings
-        app = create_app(settings)
+        self.app = app = create_app(settings)
         cfg = uvicorn.Config(app, host=settings.host, port=settings.port, log_config=None,
                              log_level=settings.log_level.lower(), access_log=False,
                              timeout_graceful_shutdown=3)  # don't hang on open MCP/SSE streams
@@ -320,6 +305,7 @@ class RouterGUI:
             f = max(1.0, r.winfo_fpixels("1i") / 96.0)
         except tk.TclError:
             f = 1.0
+        self.scale = f
         sw, sh = r.winfo_screenwidth(), r.winfo_screenheight()
         w, h = min(int(1200 * f), sw - 40), min(int(820 * f), sh - 80)
         r.geometry(f"{w}x{h}+{max(0, (sw - w) // 2)}+{max(0, (sh - h) // 3)}")
@@ -438,19 +424,45 @@ class RouterGUI:
         af = ttk.LabelFrame(right, text=" 3) AI ปลายทาง (Agents) — ส่งงานให้ใครได้บ้าง ", padding=10,
                             style="Head.TLabelframe")
         af.pack(fill="x")
+        bar = ttk.Frame(af)
+        bar.pack(fill="x")
+        for text, cmd in (("➕ เพิ่ม", self.add_agent), ("✏ แก้ไข", self.edit_agent), ("🗑 ลบ", self.delete_agent),
+                          ("🧪 ทดสอบ", self.test_agent)):
+            ttk.Button(bar, text=text, command=cmd).pack(side="left", padx=(0, 6))
+        ttk.Button(bar, text="รีเฟรช", command=self.refresh_all).pack(side="right")
         legend = ttk.Frame(af)
-        legend.pack(fill="x")
+        legend.pack(fill="x", pady=(6, 0))
         for color, text in ((GREEN, "พร้อมใช้"), (GREY, "ยังไม่ตั้งค่า"), (RED, "ปิดอยู่")):
             c = tk.Canvas(legend, width=14, height=14, highlightthickness=0, bg=self._bg())
             c.create_oval(2, 2, 12, 12, fill=color, outline=color)
             c.pack(side="left")
             ttk.Label(legend, text=text, style="Help.TLabel").pack(side="left", padx=(2, 12))
-        ttk.Button(legend, text="รีเฟรช", command=self.refresh_all).pack(side="right")
-        self.agents_box = ttk.Frame(af)
-        self.agents_box.pack(fill="x", pady=(8, 0))
-        self.agent_notes: list[ttk.Label] = []
-        self.agents_box.bind("<Configure>", lambda e: [n.configure(wraplength=max(200, e.width - 40))
-                                                       for n in self.agent_notes if n.winfo_exists()])
+        ttk.Label(legend, text="ดับเบิลคลิก = แก้ไข", style="Help.TLabel").pack(side="right")
+        style = ttk.Style(self.root)
+        rowh = int(tkfont.Font(font=self.f_log).metrics("linespace") * 1.45)
+        style.configure("Agents.Treeview", rowheight=rowh, font=self.f_log)
+        style.configure("Agents.Treeview.Heading", font=self.f_bold)
+        tvf = ttk.Frame(af)
+        tvf.pack(fill="x", pady=(6, 0))
+        self.agent_tree = ttk.Treeview(tvf, columns=("status", "name", "type", "detail"), show="headings",
+                                       height=5, selectmode="browse", style="Agents.Treeview")
+        for col, text, width, stretch in (("status", "สถานะ", 105, False), ("name", "ชื่อ (target)", 95, False),
+                                          ("type", "ชนิด", 115, False), ("detail", "รายละเอียด", 160, True)):
+            self.agent_tree.heading(col, text=text, anchor="w")
+            self.agent_tree.column(col, width=int(width * self.scale), stretch=stretch, anchor="w")
+        for tag, color in (("ok", GREEN), ("todo", "#5f6368"), ("off", RED)):
+            self.agent_tree.tag_configure(tag, foreground=color)
+        sb = ttk.Scrollbar(tvf, orient="vertical", command=self.agent_tree.yview)
+        self.agent_tree.configure(yscrollcommand=sb.set)
+        self.agent_tree.pack(side="left", fill="x", expand=True)
+        sb.pack(side="right", fill="y")
+        self.agent_tree.bind("<Double-1>", lambda e: self.edit_agent())
+        self.agent_tree.bind("<<TreeviewSelect>>", lambda e: self._show_agent_note())
+        self.agent_tree.bind("<Delete>", lambda e: self.delete_agent())
+        self.agent_note = ttk.Label(af, text="", style="Help.TLabel", justify="left", wraplength=480)
+        self.agent_note.pack(fill="x", pady=(6, 0))
+        af.bind("<Configure>", lambda e: self.agent_note.configure(wraplength=max(200, e.width - 30)))
+        self.agent_info: dict[str, str] = {}
 
         # 4) log (right column, takes all remaining height)
         lf = ttk.LabelFrame(right, text=" 4) บันทึกการทำงาน — ใครส่งงานให้ใคร สำเร็จหรือไม่ ", padding=8,
@@ -538,6 +550,13 @@ class RouterGUI:
         p("•  list_agents() — ดูว่ามี AI ตัวไหนให้ส่งงานได้บ้าง")
         p("ส่งงานได้ทีละตัวตามชื่อเท่านั้น (ไม่มีการส่งหาทุกตัวพร้อมกัน)", "help")
 
+        h1("เพิ่ม AI ปลายทางเอง (ChatGPT, Claude, Gemini, Ollama ...)")
+        p("1.  หน้าหลัก → กรอบ \"AI ปลายทาง\" → กด \"➕ เพิ่ม\"")
+        p("2.  เลือกพรีเซ็ต แล้ววาง API key ของคุณ (ตั้งชื่อ เช่น claude — AI อื่นจะเรียกด้วยชื่อนี้)")
+        p("3.  กด \"🧪 ทดสอบ\" ดูว่าตอบกลับได้ แล้วกด \"💾 บันทึก\" — ใช้งานได้ทันทีไม่ต้องรีสตาร์ท")
+        p("กุญแจจริงถูกเก็บในไฟล์ " + str(env_file_path()) + " เท่านั้น • รายชื่อ AI อยู่ใน "
+          + str(self.agents_config_path()) + " (เก็บแค่ ${ชื่อกุญแจ})", "help")
+
         h1("ทดสอบด้วย PowerShell (ไม่บังคับ)")
         code(f'Invoke-RestMethod {self.base_url}/health')
         code(f'$h = @{{ "X-API-Key" = "{key}" }}\n'
@@ -549,6 +568,7 @@ class RouterGUI:
         p("•  ไฟเซิร์ฟเวอร์เป็นสีแดง \"พอร์ตถูกใช้งาน\" → อาจเปิดโปรแกรมนี้ซ้ำอยู่แล้ว หรือเปลี่ยนพอร์ตแล้วกดบันทึก (อย่าลืมแก้ URL ใน config)")
         p("•  OpenCode / Cursor เชื่อมไม่ได้ → ตรวจว่าไฟเป็นสีเขียว และกุญแจใน config ตรงกับช่อง Router Key")
         p("•  Grok ตอบว่า \"ยังไม่ได้ตั้งค่า\" → ใส่ XAI_API_KEY ที่หน้าหลักแล้วกดบันทึก")
+        p("•  AI ที่เพิ่มเองเป็นสีเทา → ดูข้อความใต้ตาราง (เช่น ยังไม่มีกุญแจ) แล้วกด \"แก้ไข\"")
         p("•  ดูประวัติย้อนหลังได้ในไฟล์ log: " + str(self.log_file_path()), "help")
         g.configure(state="disabled")
 
@@ -603,39 +623,168 @@ class RouterGUI:
         self._update_server_widgets()
 
     def refresh_agents(self) -> None:
-        for w in self.agents_box.winfo_children():
-            w.destroy()
-        self.agent_notes = []
-        wrap = max(200, self.agents_box.winfo_width() - 40) if self.agents_box.winfo_width() > 1 else 420
+        tree = self.agent_tree
+        selected = tree.selection()[0] if tree.selection() else None
+        tree.delete(*tree.get_children())
+        self.agent_info = {}
         try:
-            agents = Router(self.settings).list_agents()
+            router = Router(self.settings)
+            agents = router.list_agents()
         except Exception as exc:
-            agents = []
+            router, agents = None, []
             log.error("สร้างรายการ agent ไม่ได้: %s", exc)
-        for i, a in enumerate(agents):
+        for a in agents:
+            obj = router.agents.get(a["name"]) if router else None
             if not a["enabled"]:
-                color, status = RED, "ปิดอยู่"
+                status, tag = "●  ปิดอยู่", "off"
             elif a["configured"]:
-                color, status = GREEN, "พร้อมใช้"
+                status, tag = "●  พร้อมใช้", "ok"
             else:
-                color, status = GREY, "ยังไม่ตั้งค่า"
-            row = ttk.Frame(self.agents_box, padding=(0, 2))
-            row.grid(row=i, column=0, sticky="we")
-            c = tk.Canvas(row, width=22, height=22, highlightthickness=0, bg=self._bg())
-            self._light(c, color)
-            c.grid(row=0, column=0, rowspan=2, sticky="n", padx=(0, 6))
-            line = ttk.Frame(row)
-            line.grid(row=0, column=1, sticky="w")
-            ttk.Label(line, text=a["name"], font=self.f_bold).pack(side="left")
-            extra = f"  ({a.get('model')})" if a.get("model") else ""
-            ttk.Label(line, text=f"   {status}{extra}", foreground=color).pack(side="left")
-            note = a.get("error") or a.get("description") if a["type"] not in AGENT_NOTES else AGENT_NOTES[a["type"]]
-            if a["type"] == "grok" and a["configured"]:
-                note = "พร้อมใช้งาน — ส่งงานด้วย target = \"" + a["name"] + "\""
-            note_lbl = ttk.Label(row, text=note or "", style="Help.TLabel", wraplength=wrap, justify="left")
-            note_lbl.grid(row=1, column=1, sticky="w")
-            self.agent_notes.append(note_lbl)
-        self.agents_box.columnconfigure(0, weight=1)
+                status, tag = "●  ยังไม่ตั้งค่า", "todo"
+            detail = " • ".join(x for x in (a.get("model"), a.get("url")) if x) or a.get("description") or ""
+            if a.get("missing_env"):
+                detail = "ต้องใส่กุญแจ: " + ", ".join(a["missing_env"])
+            elif a.get("error"):
+                detail = "ตั้งค่าผิด: " + a["error"]
+            tree.insert("", "end", iid=a["name"], values=(status, a["name"], a["type"], detail), tags=(tag,))
+            # note shown under the list for the selected agent
+            if a.get("error"):
+                note = a["error"]
+            elif a["configured"]:
+                note = f"พร้อมใช้งาน — AI ตัวอื่นส่งงานมาด้วย target = \"{a['name']}\""
+                if a.get("description"):
+                    note += f"  ({a['description']})"
+            elif a.get("missing_env"):
+                note = ("ยังไม่มีกุญแจใน .env: " + ", ".join(a["missing_env"]) +
+                        " — กด \"แก้ไข\" แล้ววาง API key")
+            elif a["type"] in AGENT_NOTES:
+                note = AGENT_NOTES[a["type"]]
+            else:
+                try:
+                    note = obj.not_configured_message() if obj else ""
+                except Exception:
+                    note = ""
+                note = note or "ยังกรอกข้อมูลไม่ครบ — กด \"แก้ไข\""
+            if not a["enabled"]:
+                note = "ปิดไว้ — กด \"แก้ไข\" แล้วติ๊ก \"เปิดใช้งาน\""
+            self.agent_info[a["name"]] = note
+        if router is not None:
+            try:
+                asyncio.run(router.aclose())
+            except Exception:
+                pass
+        n = len(agents)
+        tree.configure(height=max(3, min(n, 8)))
+        if selected and tree.exists(selected):
+            tree.selection_set(selected)
+        elif n:
+            tree.selection_set(tree.get_children()[0])
+        self._show_agent_note()
+
+    def _show_agent_note(self) -> None:
+        sel = self.selected_agent()
+        self.agent_note.configure(text=(f"{sel}: " + self.agent_info.get(sel, "")) if sel else
+                                  "ยังไม่มี AI ปลายทาง — กด \"➕ เพิ่ม\"")
+
+    def selected_agent(self) -> str | None:
+        sel = self.agent_tree.selection()
+        return sel[0] if sel else None
+
+    # ------------------------------------------------------------ agent manager
+    def agents_config_path(self) -> Path:
+        return config_write_path(self.config_path)
+
+    def _raw_agents(self) -> dict[str, dict[str, Any]] | None:
+        try:
+            return agent_store.raw_agents(self.agents_config_path())
+        except Exception as exc:
+            messagebox.showerror(APP_NAME, f"อ่าน config.yaml ไม่ได้:\n{exc}")
+            return None
+
+    def add_agent(self) -> None:
+        raw = self._raw_agents()
+        if raw is None:
+            return
+        gui_agents.AgentDialog(self, name=None, raw_cfg={"type": "openai-compatible", "auth_type": "bearer"},
+                               existing=list(raw), on_saved=self._agent_saved)
+
+    def edit_agent(self) -> None:
+        name = self.selected_agent()
+        if not name:
+            messagebox.showinfo(APP_NAME, "เลือก agent ในรายการก่อน")
+            return
+        raw = self._raw_agents()
+        if raw is None:
+            return
+        if name not in raw:
+            messagebox.showwarning(APP_NAME, f"ไม่พบ '{name}' ใน {self.agents_config_path().name}")
+            return
+        gui_agents.AgentDialog(self, name=name, raw_cfg=raw[name], existing=list(raw), on_saved=self._agent_saved)
+
+    def delete_agent(self) -> None:
+        name = self.selected_agent()
+        if not name:
+            messagebox.showinfo(APP_NAME, "เลือก agent ในรายการก่อน")
+            return
+        if not messagebox.askyesno(APP_NAME, f"ลบ AI ปลายทาง \"{name}\" ?\nAI ตัวอื่นจะส่งงานหา {name} ไม่ได้อีก"):
+            return
+        drop = messagebox.askyesno(APP_NAME, f"ลบกุญแจของ \"{name}\" ออกจากไฟล์ .env ด้วยหรือไม่?\n"
+                                             f"(เลือก \"No\" = เก็บกุญแจไว้ เผื่อเพิ่มกลับมาใหม่)")
+        try:
+            dropped = agent_store.delete_agent(self.agents_config_path(), name, remove_secrets=drop)
+        except Exception as exc:
+            messagebox.showerror(APP_NAME, f"ลบไม่สำเร็จ:\n{exc}")
+            return
+        log.info("ลบ %s แล้ว%s", name, f" (ลบกุญแจ {', '.join(dropped)} จาก .env)" if dropped else "")
+        self.apply_config_change()
+
+    def test_agent(self) -> None:
+        name = self.selected_agent()
+        if not name:
+            messagebox.showinfo(APP_NAME, "เลือก agent ในรายการก่อน")
+            return
+        try:
+            self.settings = self.load_settings()
+            cfg = self.settings.agents[name]
+        except Exception as exc:
+            messagebox.showerror(APP_NAME, f"อ่านการตั้งค่าไม่ได้:\n{exc}")
+            return
+        gui_agents.TestDialog(self, name, dict(cfg))
+
+    def _agent_saved(self, name: str, env_vars: list[str]) -> None:
+        where = self.agents_config_path()
+        msg = f"บันทึก {name} แล้ว ({where.name})"
+        if env_vars:
+            msg += f" — กุญแจเก็บใน .env: {', '.join(env_vars)}"
+        log.info(msg)
+        self.apply_config_change(select=name)
+
+    def apply_config_change(self, select: str | None = None) -> None:
+        """Reload agents/keys into the RUNNING server without a restart (port/host change -> restart)."""
+        old = self.settings
+        try:
+            new = self.load_settings()
+        except Exception as exc:
+            messagebox.showerror(APP_NAME, f"ไฟล์ตั้งค่าผิดพลาด:\n{exc}")
+            return
+        srv = self.server
+        if srv is not None and self.state == "running" and (new.host, new.port) == (old.host, old.port):
+            try:
+                srv.app.state.router.reload(new)
+                srv.settings = new
+                log.info("อัปเดตแล้ว — มีผลทันทีโดยไม่ต้องรีสตาร์ทเซิร์ฟเวอร์")
+            except Exception as exc:
+                log.error("โหลดใหม่ไม่สำเร็จ (%s) — รีสตาร์ทเซิร์ฟเวอร์แทน", exc)
+                self.restart_server()
+                return
+        elif srv is not None and self.state in ("running", "starting"):
+            log.info("พอร์ต/โฮสต์เปลี่ยน — กำลังรีสตาร์ทเซิร์ฟเวอร์อัตโนมัติ")
+            self.restart_server()
+            return
+        self.refresh_all()
+        if select and self.agent_tree.exists(select):
+            self.agent_tree.selection_set(select)
+            self.agent_tree.see(select)
 
     # ------------------------------------------------------------ server control
     def toggle_server(self) -> None:
@@ -747,7 +896,7 @@ class RouterGUI:
                 return
         if self._save_env({"XAI_API_KEY": value or None}):
             log.info("บันทึกกุญแจ xAI แล้ว — %s", "Grok พร้อมใช้" if value else "ลบกุญแจแล้ว")
-            self.restart_server()
+            self.apply_config_change()
 
     def toggle_key_edit(self) -> None:
         if str(self.key_entry.cget("state")) == "readonly":
@@ -777,7 +926,7 @@ class RouterGUI:
             self.key_entry.configure(state="readonly")
             self.key_edit_btn.configure(text="แก้ไข")
             log.info("เปลี่ยน Router Key แล้ว — อย่าลืมอัปเดตกุญแจใน config ของ OpenCode / Cursor (แท็บคู่มือ)")
-            self.restart_server()
+            self.apply_config_change()
 
     def save_port(self) -> None:
         try:
@@ -848,6 +997,9 @@ class RouterGUI:
 def run_gui(*, create_app: Callable[[Settings], Any], config_path: str | None = None, host: str | None = None,
             port: int | None = None, log_level: str | None = None) -> int:
     """Entry point used by main.py when started without arguments (or with --gui)."""
+    # FIRST: persist the router key next to the EXE - before any window exists, so neither a GUI
+    # failure nor a hard kill (Task Manager) can ever lose it.
+    key, generated, warning = ensure_router_key(config_path)
     hide_own_console()
     enable_dpi_awareness()
 
@@ -855,8 +1007,8 @@ def run_gui(*, create_app: Callable[[Settings], Any], config_path: str | None = 
         root = tk.Tk()
     except tk.TclError as exc:  # e.g. no $DISPLAY on Linux
         raise GuiUnavailable(f"cannot open a window: {exc}") from exc
-
-    key, generated, warning = ensure_router_key(config_path)
+    if warning:
+        root.after(800, lambda: messagebox.showwarning(APP_NAME, warning))
     try:
         settings = load_settings(config_path)
     except Exception as exc:

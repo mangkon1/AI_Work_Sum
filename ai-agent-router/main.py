@@ -34,7 +34,8 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
 
-from config import APP_NAME, APP_VERSION, Settings, load_settings, setup_logging
+from config import (APP_NAME, APP_VERSION, Settings, app_base_dir, ensure_router_key, env_file_path, load_settings,
+                    setup_logging)
 from router_core import Router, RouterError, new_request_id
 
 log = logging.getLogger("router.api")
@@ -252,6 +253,33 @@ def wants_gui(argv: list[str], args: argparse.Namespace) -> bool:
     return len(argv) == 0
 
 
+def gui_failed_notice(reason: str) -> None:
+    """The GUI could not open -> we continue as a headless server. Never do that *invisibly*:
+    on Windows the console was hidden by `--hide-console hide-early`, so show it again and pop up
+    a message box; everywhere also print to stderr and write logs/startup-error.log."""
+    msg = (f"[AI Agent Router] GUI unavailable ({reason}); starting headless server instead.\n"
+           f"Settings / router key: {env_file_path()}")
+    print(msg, file=sys.stderr)
+    try:
+        p = app_base_dir() / "logs" / "startup-error.log"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with p.open("a", encoding="utf-8") as fh:
+            fh.write(time.strftime("%Y-%m-%d %H:%M:%S ") + msg + "\n")
+    except OSError:
+        pass
+    if os.name == "nt":
+        try:
+            import ctypes
+            hwnd = ctypes.windll.kernel32.GetConsoleWindow()
+            if hwnd:
+                ctypes.windll.user32.ShowWindow(hwnd, 5)  # SW_SHOW: the server is visible + closable
+            ctypes.windll.user32.MessageBoxW(
+                None, "เปิดหน้าต่างโปรแกรมไม่ได้ จึงทำงานแบบไม่มีหน้าต่าง (headless) แทน\n"
+                      "ปิดโปรแกรมได้ที่หน้าต่าง console (กด Ctrl+C)\n\n" + msg, APP_NAME, 0x30)
+        except Exception:
+            pass
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     args = parse_args(argv)
@@ -262,8 +290,7 @@ def main(argv: list[str] | None = None) -> int:
             return gui.run_gui(create_app=create_app, config_path=args.config, host=args.host,
                                port=args.port, log_level=args.log_level)
         except ImportError as exc:  # includes gui.GuiUnavailable (no tkinter / no display)
-            print(f"[AI Agent Router] GUI unavailable ({exc}); starting headless server instead.",
-                  file=sys.stderr)
+            gui_failed_notice(str(exc))
     try:
         settings = load_settings(args.config)
     except Exception as exc:
@@ -279,6 +306,21 @@ def main(argv: list[str] | None = None) -> int:
         settings.log_file = args.log_file
 
     setup_logging(settings.log_level, settings.log_file, stdio_mode=args.mcp_stdio)
+
+    if not args.mcp_stdio and not settings.api_keys and not settings.allow_anonymous:
+        # headless first run: create + persist a key instead of rejecting every request
+        key, generated, warning = ensure_router_key(args.config)
+        settings = load_settings(args.config) if not warning else settings
+        if warning:
+            settings.api_keys = {key: None}
+            log.warning(warning)
+        if generated:
+            log.warning("Generated a router API key and saved it to %s - use it as X-API-Key: %s",
+                        env_file_path(), key)
+        if args.host:
+            settings.host = args.host
+        if args.port:
+            settings.port = args.port
 
     if args.mcp_stdio:
         # stdout = JSON-RPC channel; every log line goes to stderr / file
