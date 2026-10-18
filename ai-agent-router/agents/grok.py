@@ -1,5 +1,5 @@
 """
-Grok agent  (type: grok) — xAI Chat Completions API.
+Grok agent  (type: grok, alias: xai) — xAI Chat Completions API (OpenAI-compatible).
 
     POST {base_url}/chat/completions        (default base_url: https://api.x.ai/v1)
     Authorization: Bearer $XAI_API_KEY
@@ -20,7 +20,8 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from .base import AgentError, AgentNotConfiguredError, BaseAgent
+from .base import AgentNotConfiguredError
+from .openai_compat import OpenAICompatibleAgent
 
 DEFAULT_MODEL = "grok-4.7"
 DEFAULT_BASE_URL = "https://api.x.ai/v1"
@@ -31,62 +32,29 @@ DEFAULT_SYSTEM_PROMPT = (
 )
 
 
-class GrokAgent(BaseAgent):
+class GrokAgent(OpenAICompatibleAgent):
     type_name = "grok"
 
     def __init__(self, name: str, config: dict[str, Any] | None = None) -> None:
+        config = dict(config or {})
+        config["api_key"] = str(config.get("api_key") or os.environ.get("XAI_API_KEY") or "").strip()
+        config["model"] = os.environ.get("GROK_MODEL") or config.get("model") or DEFAULT_MODEL
+        config["url"] = (config.get("url") or config.get("base_url") or os.environ.get("XAI_BASE_URL")
+                         or DEFAULT_BASE_URL)
+        config.setdefault("system_prompt", DEFAULT_SYSTEM_PROMPT)
+        config["auth_type"] = config.get("auth_type") or "bearer"
         super().__init__(name, config)
-        self.api_key: str = str(self.config.get("api_key") or os.environ.get("XAI_API_KEY") or "").strip()
-        self.model: str = str(os.environ.get("GROK_MODEL") or self.config.get("model") or DEFAULT_MODEL)
-        self.base_url: str = str(self.config.get("base_url") or os.environ.get("XAI_BASE_URL")
-                                 or DEFAULT_BASE_URL).rstrip("/")
-        self.system_prompt: str = str(self.config.get("system_prompt") or DEFAULT_SYSTEM_PROMPT)
-        self.temperature = self.config.get("temperature")
-        self.max_tokens = self.config.get("max_tokens")
+        self.base_url = self.url.rsplit("/chat/completions", 1)[0]
 
     def is_configured(self) -> bool:
-        return bool(self.api_key)
+        return bool(self.api_key) and bool(self.url)
 
-    def describe(self) -> dict[str, Any]:
-        info = super().describe()
-        info["model"] = self.model
-        return info
-
-    def build_messages(self, message: str, context: dict[str, Any] | None, from_agent: str) -> list[dict[str, str]]:
-        system = f"{self.system_prompt}\n\nThe calling agent is: '{from_agent}'."
-        ctx = self.context_as_text(context)
-        if ctx:
-            # context goes in as extra system text so the user turn stays the pure task
-            system += f"\n\nAdditional context supplied by the caller (JSON):\n{ctx}"
-        return [{"role": "system", "content": system}, {"role": "user", "content": message}]
+    def not_configured_message(self) -> str:
+        return (f"Agent '{self.name}' is not configured: set XAI_API_KEY in .env "
+                f"(or agents.{self.name}.api_key in config.yaml)")
 
     async def invoke(self, message: str, context: dict[str, Any] | None = None,
                      from_agent: str = "opencode") -> str:
         if not self.api_key:
-            raise AgentNotConfiguredError(
-                f"Agent '{self.name}' is not configured: set XAI_API_KEY in .env "
-                f"(or agents.{self.name}.api_key in config.yaml)")
-
-        body: dict[str, Any] = {
-            "model": self.model,
-            "messages": self.build_messages(message, context, from_agent),
-            "stream": False,
-        }
-        if self.temperature is not None:
-            body["temperature"] = float(self.temperature)
-        if self.max_tokens is not None:
-            body["max_tokens"] = int(self.max_tokens)
-
-        resp = await self._request(
-            "POST", f"{self.base_url}/chat/completions", json=body,
-            headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
-        )
-        try:
-            data = resp.json()
-            content = data["choices"][0]["message"]["content"]
-        except (ValueError, KeyError, IndexError, TypeError) as exc:
-            raise AgentError(f"{self.name}: unexpected xAI response: {resp.text[:300]}",
-                             code="bad_upstream_payload") from exc
-        if isinstance(content, list):  # defensive: content parts
-            content = "".join(p.get("text", "") for p in content if isinstance(p, dict))
-        return str(content or "")
+            raise AgentNotConfiguredError(self.not_configured_message())
+        return await super().invoke(message, context, from_agent)

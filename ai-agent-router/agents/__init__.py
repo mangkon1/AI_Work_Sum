@@ -19,7 +19,11 @@ AGENT_TYPES: dict[str, str | type[BaseAgent]] = {
     "xai": "agents.grok:GrokAgent",
     "http": "agents.http_agent:HttpAgent",
     "webhook": "agents.http_agent:HttpAgent",
+    "openai-compatible": "agents.openai_compat:OpenAICompatibleAgent",
+    "openai_compatible": "agents.openai_compat:OpenAICompatibleAgent",
+    "openai": "agents.openai_compat:OpenAICompatibleAgent",
     "cursor": "agents.cursor:CursorAgent",
+    "cursor-webhook": "agents.cursor:CursorAgent",
     "opencode": "agents.opencode:OpenCodeAgent",
 }
 
